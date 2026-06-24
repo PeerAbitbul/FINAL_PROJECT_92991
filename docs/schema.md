@@ -27,7 +27,7 @@
 
 | עמודה | סיבה |
 |-------|------|
-| `push_id` | קישור ל-`push_events` |
+| `push_event_id` | קישור ל-`push_events` |
 | `author_name` | שם כותב ה-commit |
 | `author_email` | אימייל כותב ה-commit — Q2 מגדיר commit author כזוג ייחודי של name+email |
 
@@ -99,7 +99,7 @@
 ## Materialized View — `contributions`
 
 ### למה?
-Q3 וQ5 צריכים לדעת "מי תרם לאיזה repo". המידע הזה מפוזר בשתי טבלאות — `pull_request_events` (pr_author) ו-`push_commits` (author_name). במקום לחשב את זה מחדש בכל שאילתה, שומרים אותו פעם אחת.
+Q3 וQ5 צריכים לדעת "מי תרם לאיזה repo". המידע מפוזר בשתי טבלאות — `pull_request_events` (pr_author) ו-`push_commits` (author_name). במקום לחשב מחדש בכל שאילתה, שומרים פעם אחת. ה-view מחזיק שורה לכל זוג `(actor, repo)` ייחודי + עמודת `contributions` (כמה תרומות) — שמשמשת את Q3 ל-tie-break.
 
 ### למה Materialized View ולא View רגיל?
 View רגיל מחשב מחדש בכל שאילתה — על 34M שורות זה איטי.
@@ -111,11 +111,18 @@ Materialized View שומר את התוצאה על הדיסק — מהיר כמו
 ### הגדרה:
 ```sql
 CREATE MATERIALIZED VIEW contributions AS
-  SELECT pr_author AS actor, repo FROM pull_request_events
-  UNION
-  SELECT pc.author_name AS actor, pe.repo
-  FROM push_commits pc
-  JOIN push_events pe ON pc.push_id = pe.id;
+  SELECT actor, repo, COUNT(*) AS contributions
+  FROM (
+    SELECT pr_author AS actor, repo
+    FROM pull_request_events
+    WHERE pr_author IS NOT NULL
+    UNION ALL
+    SELECT pc.author_name AS actor, pe.repo
+    FROM push_commits pc
+    JOIN push_events pe ON pc.push_event_id = pe.push_event_id
+    WHERE pc.author_name IS NOT NULL
+  ) t
+  GROUP BY actor, repo;
 ```
 
 ### מתי מרעננים?
@@ -145,7 +152,7 @@ REFRESH MATERIALIZED VIEW contributions;
 ### `push_commits`
 | Index | סיבה |
 |-------|------|
-| `push_id` | JOIN עם `push_events` |
+| `push_event_id` | JOIN עם `push_events` |
 | `author_name`, `author_email` | Q2 מחפש לפי commit author |
 
 ### `watch_events`
