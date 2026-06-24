@@ -16,11 +16,13 @@ if __name__ == "__main__":
     # קריאת תאריך ההתחלה מה-environment
     start = os.environ.get('REPLAY_WINDOW_START', '2024-01-15')
 
-    # אם אין high-water mark — מתחילים מהתחלה. אחרת ממשיכים מאיפה שעצרנו
+    # אם אין high-water mark — מתחילים מהתחלה. אחרת ממשיכים מהשעה ש*אחרי*
+    # האחרונה שהושלמה — אחרת היינו מושכים ומכניסים שוב שעה שכבר נשמרה (כפילויות).
     if last_hour is None:
         current_hour = datetime.strptime(start + '-0', '%Y-%m-%d-%H')
     else:
-        current_hour = datetime.strptime(last_hour, '%Y-%m-%d-%H')
+        current_hour = datetime.strptime(last_hour, '%Y-%m-%d-%H') + timedelta(hours=1)
+
 
     while True:
         # נסה להוריד את הקובץ של השעה הנוכחית
@@ -49,6 +51,7 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Skipping bad event: {e}", flush=True)
                 conn.rollback()
+        conn.commit()
         conn.close()
 
         # עדכן high-water mark לשעה שסיימנו
