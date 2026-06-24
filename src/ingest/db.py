@@ -105,14 +105,26 @@ def create_tables():
     execute_sql("CREATE INDEX IF NOT EXISTS idx_fork_created_at ON fork_events(created_at)")
 
    
+     # שורה אחת לכל זוג (actor, repo) ייחודי, עם מספר התרומות בו.
+    # contributor = מי שפתח PR (pr_author) או כתב commit (author_name).
+    # UNION ALL בפנים כדי לשמר ספירה אמיתית; ה-GROUP BY מאחד ל-(actor, repo).
+    # Q5/Neo4j משתמשים ב-(actor, repo); Q3 משתמש גם ב-contributions ל-tie-break.
     execute_sql("""
         CREATE MATERIALIZED VIEW IF NOT EXISTS contributions AS
-            SELECT pr_author AS actor, repo FROM pull_request_events
-            UNION
-            SELECT pc.author_name AS actor, pe.repo
-            FROM push_commits pc
-            JOIN push_events pe ON pc.push_event_id = pe.push_event_id
+            SELECT actor, repo, COUNT(*) AS contributions
+            FROM (
+                SELECT pr_author AS actor, repo
+                FROM pull_request_events
+                WHERE pr_author IS NOT NULL
+                UNION ALL
+                SELECT pc.author_name AS actor, pe.repo
+                FROM push_commits pc
+                JOIN push_events pe ON pc.push_event_id = pe.push_event_id
+                WHERE pc.author_name IS NOT NULL
+            ) t
+            GROUP BY actor, repo
     """)
+
 
     print("All tables, indexes, and views created successfully.")
 
@@ -162,7 +174,6 @@ def save_event(event, conn):
         """, (event['event_type'], event['actor'], event['repo'],
               event['created_at'], payload_str))
 
-    conn.commit()
     cursor.close()
 
 
@@ -177,8 +188,15 @@ def get_last_fetched_hour():
 
 
 def set_last_fetched_hour(hour):
-    execute_sql(f"""
+    # parameterized — לא f-string — כדי למנוע SQL injection
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
         INSERT INTO ingest_state (id, last_fetched_hour)
-        VALUES (1, '{hour}')
-        ON CONFLICT (id) DO UPDATE SET last_fetched_hour = '{hour}'
-    """)
+        VALUES (1, %s)
+        ON CONFLICT (id) DO UPDATE SET last_fetched_hour = %s
+    """, (hour, hour))
+    conn.commit()
+    cursor.close()
+    conn.close()
+

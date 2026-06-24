@@ -27,54 +27,67 @@
 ## `src/ingest/db.py`
 אחראי על כל מה שקשור לבסיס הנתונים.
 
-- התחברות ל-Postgres דרך `POSTGRES_URL` מה-environment
-- יצירת כל הטבלאות אם לא קיימות (`create_tables`)
-- יצירת indexes
-- יצירת materialized view של `contributions`
-- קריאה ועדכון של high-water mark (`get_last_fetched_hour`, `set_last_fetched_hour`)
+### פונקציות:
+- **`get_connection()`** — פותח connection ל-Postgres דרך `POSTGRES_URL` מה-environment. מוחזר ל-caller כדי שה-connection יישאר פתוח לאורך כל עיבוד השעה (ביצועים).
+- **`execute_sql(sql)`** — מריץ SQL statement חד-פעמי (לשימוש ב-DDL בלבד — יצירת טבלאות, indexes).
+- **`create_tables()`** — יוצר את כל הטבלאות, indexes, וה-materialized view אם לא קיימים. רץ פעם אחת בהפעלה.
+- **`save_event(event, conn)`** — שומר event אחד לטבלה המתאימה לפי `event['type']`. מקבל connection מבחוץ כדי לא לפתוח connection חדש לכל event.
+- **`get_last_fetched_hour()`** — קורא את ה-high-water mark מטבלת `ingest_state`. מחזיר `None` אם זו הפעלה ראשונה.
+- **`set_last_fetched_hour(hour)`** — מעדכן את ה-high-water mark בטבלת `ingest_state` עם UPSERT.
 
 ---
 
 ## `src/ingest/poller.py`
 אחראי על משיכת קבצים מה-vendor.
 
-- בניית URL מה-high-water mark לפי פורמט `YYYY-M-D-H.json.gz` (ללא zero-padding על השעה)
-- שליחת GET request ל-vendor
-- טיפול בתשובות:
-  - `200` — הצלחה, להעביר את הקובץ ל-normalizer
-  - `404` — השעה עוד לא עברה, לחכות ולנסות שוב
-  - `503` — vendor בoutage, לחכות ולנסות שוב
-- retry עם exponential backoff על 404 ו-503
-- זיהוי truncated gzip — אם הקובץ נחתך באמצע לנסות שוב
-- קריאת `VENDOR_URL` מה-environment
+### פונקציות:
+- **`build_url(hour)`** — בונה את ה-URL לפי שעה נתונה. פורמט: `YYYY-MM-DD-H.json.gz` עם zero-padding על חודש ויום.
+- **`fetch_file(hour)`** — שולח GET request ל-vendor ומטפל בתשובות:
+  - `200` — מחזיר את ה-response
+  - `404` — השעה עוד לא עברה, ישן 5 שניות ומחזיר `None`
+  - `503` — vendor בoutage, ישן 30 שניות ומחזיר `None`
+  - שגיאת network — ישן 10 שניות ומחזיר `None`
 
 ---
 
 ## `src/ingest/normalizer.py`
 אחראי על חילוץ שדות מה-JSON לפי סוג אירוע.
 
-- קבלת שורת JSON אחת (event)
-- זיהוי `type` של האירוע
-- חילוץ שדות רלוונטיים לפי סוג:
+### פונקציות:
+- **`parse_file(response)`** — מקבל HTTP response, מפענח את ה-gzip ומחזיר רשימת שורות. משתמש ב-`zlib.decompressobj` כדי שגם **gzip חתוך (truncated chaos)** לא יקרוס — שומר את כל השורות השלמות עד נקודת החיתוך, והשורה החצי-שבורה האחרונה נזרקת ב-`parse_event`.
+- **`parse_event(line)`** — מפרסר שורת JSON אחת ל-dict. מחזיר `None` אם השורה שבורה.
+- **`normalize(event)`** — ממיר event גולמי לפורמט אחיד לפי סוג:
   - `PushEvent` → actor, repo, forced, commits (author_name, author_email)
   - `PullRequestEvent` → pr_author מה-payload (לא actor), repo, language, action, merged
   - `WatchEvent` → actor, repo, created_at
   - `ForkEvent` → actor, repo, created_at
-  - סוג לא מוכר → שמירה כ-raw_event עם payload מלא
-- החזרת dict מסודר לשמירה ב-db
+  - סוג לא מוכר → raw_event עם payload מלא ב-JSONB
 
 ---
 
 ## `src/ingest/main.py`
 נקודת הכניסה — מפעיל את הלולאה הראשית.
 
-- קריאה ל-`create_tables()` בהפעלה ראשונה
-- קריאת high-water mark — מאיזה קובץ להמשיך
-- אם אין high-water mark — להתחיל מ-`REPLAY_WINDOW_START` שב-environment
-- לולאה אינסופית:
-  1. חשב את השעה הבאה
-  2. קרא ל-poller להוריד
-  3. קרא ל-normalizer לנרמל
-  4. שמור ל-db
-  5. עדכן high-water mark
-  6. עבור לשעה הבאה
+### זרימה:
+1. `create_tables()` — יצירת כל הטבלאות בהפעלה ראשונה
+2. `get_last_fetched_hour()` — קריאת high-water mark. אם קיים, מתחילים מהשעה ש*אחרי* האחרונה שהושלמה (כדי לא לעבד פעמיים שעה שכבר נשמרה). אם `None` — מתחילים מתחילת החלון.
+3. לולאה אינסופית לכל שעה:
+   - `fetch_file(hour)` — הורדת קובץ מה-vendor
+   - `parse_file(response)` — פתיחת gzip וחלוקה לשורות
+   - לכל שורה: `parse_event` → `normalize` → `save_event`
+   - event שגוי — `try/except` שתופס ומדלג בלי לקרוס
+   - `set_last_fetched_hour(hour)` — עדכון high-water mark רק אחרי שכל השורות עובדו
+
+---
+
+## `src/ingest/neo4j_sync.py`
+סנכרון נתוני contributions מ-PostgreSQL ל-Neo4j. רץ ידנית לפני הדיפנס.
+
+### פונקציות:
+- **`get_connection()`** — פותח connection ל-Postgres.
+- **`get_contributions()`** — מרענן את ה-materialized view ושולף את כל זוגות `(actor, repo)`.
+- **`create_indexes(driver)`** — יוצר indexes על Developer.name ו-Repo.name ב-Neo4j לפני הכנסת נתונים (מאיץ את ה-MERGE).
+- **`create_developers(tx, batch)`** — יוצר Developer nodes ב-Neo4j בbatch.
+- **`create_repos(tx, batch)`** — יוצר Repo nodes ב-Neo4j בbatch.
+- **`create_relationships(tx, batch)`** — יוצר קשרי `CONTRIBUTED_TO` בין Developers ל-Repos.
+- **`sync_to_neo4j(contributions)`** — מריץ את כל השלבים בchunks של 1000 שורות כדי לא לשבור את ה-CPU.

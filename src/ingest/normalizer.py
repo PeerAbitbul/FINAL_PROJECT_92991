@@ -1,10 +1,29 @@
 import gzip
 import json
+import zlib
+
+#def parse_file(response):
+#    decompressed = gzip.decompress(response.content)
+#    text = decompressed.decode('utf-8')
+#    lines = text.splitlines()
+#    return lines
+
 
 def parse_file(response):
-    decompressed = gzip.decompress(response.content)
-    text = decompressed.decode('utf-8')
+    # gzip.decompress קורס על stream חתוך (truncated chaos). במקום זה משתמשים
+    # ב-decompressobj שמחזיר את כל מה שהספיק להתפענח ולא זורק על סוף מוקדם.
+    decompressor = zlib.decompressobj(zlib.MAX_WBITS | 16)
+    try:
+        decompressed = decompressor.decompress(response.content)
+        decompressed += decompressor.flush()
+    except (zlib.error, OSError, EOFError) as e:
+        # truncated gzip — שומרים את מה שכבר פוענח עד לנקודת החיתוך
+        print(f"Truncated/corrupt gzip, keeping partial data: {e}", flush=True)
+        decompressed = decompressor.flush()
+
+    text = decompressed.decode('utf-8', errors='ignore')
     lines = text.splitlines()
+    # השורה האחרונה עלולה להיות חצי-שורה בגלל החיתוך — נזרקת ב-parse_event
     return lines
 
 def parse_event(line):
