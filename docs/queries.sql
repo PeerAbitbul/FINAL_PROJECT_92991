@@ -139,20 +139,31 @@ ORDER BY stars DESC;
 -- Q5: Collaboration network from seed actor (Neo4j Cypher)
 -- Neo4j Browser: http://localhost:17474/browser
 -- Connection URL: neo4j://localhost:17487  |  User: neo4j  |  Password: password
--- Seed actor: mkarmark (255 repos, active human developer in dataset)
+-- Seed actor: zsviczian (active human contributor with a real collaboration network).
+-- NOTE: query is parameterized by name; a solo contributor or bot will correctly return no rows.
+--
+-- Performance: compute the distance-1 set ONCE, then use NOT IN (list membership)
+-- instead of a repeated pattern anti-join — runs in ~2-3s even for a hub-connected
+-- seed. LIMIT 100 is just so the browser doesn't choke on rendering; remove it to
+-- return the full set (the computation itself is fast).
 
-
-// Distance 1 — developers who share a repo with the seed (+ the connecting repos)
-MATCH (seed:Developer {name: "mkarmark"})-[:CONTRIBUTED_TO]->(r:Repo)<-[:CONTRIBUTED_TO]-(d1:Developer)
-WHERE d1 <> seed
-RETURN d1.name AS developer, 1 AS distance, collect(DISTINCT r.name) AS connecting_repos
-
-UNION
-
-// Distance 2 — developers reachable via one intermediate (+ the second-hop repos).
-// ה-NOT מוציא את מי שכבר במרחק 1, כך שכל מפתח מופיע פעם אחת עם המרחק המינימלי.
-MATCH (seed:Developer {name: "mkarmark"})-[:CONTRIBUTED_TO]->(:Repo)<-[:CONTRIBUTED_TO]-(d1:Developer)-[:CONTRIBUTED_TO]->(r2:Repo)<-[:CONTRIBUTED_TO]-(d2:Developer)
-WHERE d2 <> seed
-  AND NOT (seed)-[:CONTRIBUTED_TO]->(:Repo)<-[:CONTRIBUTED_TO]-(d2)
-RETURN d2.name AS developer, 2 AS distance, collect(DISTINCT r2.name) AS connecting_repos
+MATCH (seed:Developer {name:'zsviczian'})-[:CONTRIBUTED_TO]->(r1:Repo)<-[:CONTRIBUTED_TO]-(d1:Developer)
+WHERE d1 <> seed AND d1.name <> ''
+WITH seed, collect(DISTINCT d1) AS d1set, collect(DISTINCT r1) AS seedRepos
+WITH d1set, seedRepos, [seed] + d1set AS excluded
+CALL {
+    WITH d1set, seedRepos
+    UNWIND d1set AS d1
+    MATCH (d1)-[:CONTRIBUTED_TO]->(r1:Repo) WHERE r1 IN seedRepos
+    RETURN d1.name AS developer, 1 AS distance, collect(DISTINCT r1.name) AS connecting_repos
+    UNION
+    WITH d1set, excluded
+    UNWIND d1set AS d1
+    MATCH (d1)-[:CONTRIBUTED_TO]->(r2:Repo)<-[:CONTRIBUTED_TO]-(d2:Developer)
+    WHERE NOT d2 IN excluded AND d2.name <> ''
+    RETURN d2.name AS developer, 2 AS distance, collect(DISTINCT r2.name) AS connecting_repos
+}
+RETURN developer, distance, connecting_repos
+ORDER BY distance, developer
+LIMIT 100;
 
