@@ -4,11 +4,13 @@
 
 ## שלב 0 — איפוס מלא (לפני ההצגה)
 
+> ⚠️ **אזהרה:** `down -v` מוחק גם את ה-volume של הקבצים שהורדו — הורדה מחדש של החלון המלא לוקחת **שעה-שעתיים** (~14GB). הרץ `down -v` רק אם יש לך זמן להמתין, או הגדר `MAX_FILES_TO_DOWNLOAD` ב-`.env` קודם. אם הנתונים כבר ירדו ואתה רק רוצה להתחיל נקי בלי הורדה מחדש — השתמש ב-`down` בלי `-v`.
+
 ```bash
-# מחיקת כל הcontainers והנתונים
+# מחיקת כל הcontainers והנתונים (כולל הקבצים שהורדו!)
 docker compose down -v
 
-# הפעלה מחדש מאפס
+# הפעלה מחדש מאפס — חובה --build כדי שהקוד המעודכן ייכנס ל-image
 docker compose up -d --build
 ```
 
@@ -75,6 +77,12 @@ docker exec -it crater-postgres psql -U postgres -d crater -c "SELECT * FROM ing
 ---
 
 ## שלב 5 — הרצת שאילתות ב-pgAdmin
+
+> 🔻 **לפני Q3 ו-Q5** — רענן את ה-materialized view (חובה, אחרת הוא ריק או מיושן):
+> ```bash
+> docker exec crater-postgres psql -U postgres -d crater -c "REFRESH MATERIALIZED VIEW contributions;"
+> ```
+> **מה להגיד:** "ה-view `contributions` מחושב פעם אחת לפני השאילתות הכבדות — לא בכל ingest. זה מאיץ את Q3 ו-Q5."
 
 פתח pgAdmin:
 - Host: `localhost` | Port: `15432` | User: `postgres` | Password: `password` | DB: `crater`
@@ -248,6 +256,29 @@ RETURN d2.name AS developer, 2 AS distance, collect(DISTINCT r2.name) AS connect
 
 ---
 
+## שלב 8 — הדגמת עמידות (chaos + restart)
+
+ה-BRIEF אומר במפורש שהבוחן יפעיל chaos ויבדוק שרידות restart. כדאי **להציע להדגים** את זה בעצמך.
+
+### א. שרידות restart (high-water mark)
+```bash
+docker exec crater-postgres psql -U postgres -d crater -c "SELECT * FROM ingest_state;"
+docker compose restart ingest
+# המתן כמה שניות, ואז שוב:
+docker compose logs --tail=5 ingest
+```
+**מה להגיד:** "הפלתי את ה-ingest. כשהוא עולה הוא קורא את ה-high-water mark וממשיך מהשעה הבאה — בלי לאבד ובלי לכפול נתונים."
+
+### ב. שרידות chaos
+```bash
+make vendor-chaos     # מדליק slow/late/truncated/drift/outage
+docker compose logs -f ingest    # רואים שהוא ממשיך לעבוד בלי לקרוס
+make vendor-calm      # כיבוי chaos
+```
+**מה להגיד:** "עם chaos דלוק — קובץ חתוך לא מפיל אותנו (zlib decompress חלקי), 503/404 גורמים ל-backoff וניסיון חוזר, ו-schema drift לא שובר כי אנחנו משתמשים ב-`.get()` עם defaults. המערכת מתאוששת לבד בלי התערבות."
+
+---
+
 ## נקודות מפתח לדיפנס
 
 **למה PostgreSQL?**
@@ -258,4 +289,11 @@ RETURN d2.name AS developer, 2 AS distance, collect(DISTINCT r2.name) AS connect
 
 **מה ה-pipeline עושה?**
 high-water mark pattern — שורד restart. כל event שגוי נדלג (try/except) בלי לקרוס. **קובץ gzip חתוך (truncated) לא מפיל את המערכת** — שומרים את החלק שהתפענח. סוגי events לא מוכרים נשמרים ב-raw_events.
+
+---
+
+## הכנה מורחבת
+- **שאלות ותשובות מלאות לדיפנס** → [defense-prep.md](defense-prep.md)
+- **הצדקת בחירת האחסון** (polyglot, אלטרנטיבות שנדחו) → [storage-rationale.md](storage-rationale.md)
+- **בעיות שנמצאו ותוקנו** → [issues.md](issues.md)
 
