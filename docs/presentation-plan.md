@@ -27,6 +27,12 @@ make run
 
 **מה להגיד:** "אני מפעיל את כל השירותים — Postgres, Neo4j, ה-vendor mock שמדמה את GitHub Archive, ושירות ה-ingest שכתבתי."
 
+> 📥 **מעקב אחרי הורדת הקבצים** (בזמן ש-data-init רץ): כמה קבצים ירדו, גודל, והאחרון.
+> ```bash
+> docker run --rm -v crater_gh-archive-cache:/data alpine sh -c "echo 'Files:'; ls /data | wc -l; echo 'Size:'; du -sh /data; echo 'Latest:'; ls /data | sort -V | tail -1"
+> ```
+> ה-`gh-archive-vendor` וה-`ingest` יעלו רק אחרי ש-data-init מסיים את כל ההורדה.
+
 ---
 
 ## שלב 2 — בדיקה שהכל עלה
